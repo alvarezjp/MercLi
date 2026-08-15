@@ -92,20 +92,20 @@ notificaciones_enviadas
 Cada etapa tiene: objetivo, tareas, y **criterio de aceptación** (cómo saber que está realmente terminada, no solo "código escrito").
 
 ### Etapa 0 — Setup de infraestructura
-- [ ] Crear proyecto en Supabase, guardar URL y anon key
-- [ ] Crear proyecto Next.js, conectar a Vercel
-- [ ] Configurar variables de entorno (`.env.local` + Vercel envs): Supabase URL/key, ticket de Mercado Público, credenciales Resend, credenciales Twilio
-- [ ] Crear repositorio Git con `.gitignore` correcto (nunca subir `.env`)
-- [ ] Solicitar el **ticket real** de la API de Mercado Público (formulario oficial, con RUT y correo reales — el de prueba tiene datos limitados)
+- [x] Crear proyecto en Supabase, guardar URL y anon key
+- [x] Crear proyecto Next.js, conectar a Vercel
+- [x] Configurar variables de entorno (`.env.local` + Vercel envs): Supabase URL/key, ticket de Mercado Público, credenciales Resend, credenciales Twilio
+- [x] Crear repositorio Git con `.gitignore` correcto (nunca subir `.env`)
+- [x] Solicitar el **ticket real** de la API de Mercado Público (formulario oficial, con RUT y correo reales — el de prueba tiene datos limitados)
 
 **Criterio de aceptación:** proyecto corre localmente (`npm run dev`) y hace un fetch de prueba exitoso a Supabase y a la API de Mercado Público.
 
 ### Etapa 1 — Autenticación y control de trial
-- [ ] Configurar Supabase Auth (email/password)
-- [ ] Crear tabla `perfiles` + trigger que la llena automáticamente al registrarse un usuario (`trial_fin = now() + 7 days` por defecto)
-- [ ] Crear políticas RLS en las tablas de datos que exijan `trial_fin > now()`
-- [ ] Pantalla de login/registro en el frontend
-- [ ] Pantalla de "prueba vencida" cuando RLS bloquea el acceso
+- [x] Configurar Supabase Auth (email/password)
+- [x] Crear tabla `perfiles` + trigger que la llena automáticamente al registrarse un usuario (`trial_fin = now() + 7 days` por defecto)
+- [x] Crear políticas RLS en las tablas de datos que exijan `trial_fin > now()`
+- [x] Pantalla de login/registro en el frontend
+- [x] Pantalla de "prueba vencida" cuando RLS bloquea el acceso
 
 **Criterio de aceptación:** un usuario nuevo se registra, ve un `trial_fin` correcto, y si se le fuerza manualmente una fecha pasada en la base de datos, deja de ver datos y le aparece la pantalla de trial vencido — sin tocar su sesión de Auth.
 
@@ -178,10 +178,21 @@ Cada etapa tiene: objetivo, tareas, y **criterio de aceptación** (cómo saber q
 - Próximo paso sugerido:
 ```
 
-### [2026-08-12] — Agente/sesión: Claude (planificación inicial)
-- Etapa en la que se trabajó: Ninguna etapa de código todavía — se definió el plan completo (Etapas 0-7).
-- Qué se completó: Documento de plan, modelo de datos, decisión de stack y arquitectura de trial vía RLS.
-- Qué quedó pendiente / a medias: Todo el desarrollo, desde la Etapa 0.
-- Decisiones tomadas que no estaban en el plan original: se agregó la tabla `notificaciones_enviadas` (necesaria para evitar notificaciones duplicadas en la Etapa 5).
-- Bloqueos o cosas que el humano debe resolver: solicitar el ticket real de la API de Mercado Público (formulario oficial) antes de empezar la Etapa 0-2.
-- Próximo paso sugerido: comenzar Etapa 0 (setup de infraestructura).
+### [2026-08-12] — Agente/sesión: Claude (Etapa 0 completada)
+- Etapa en la que se trabajó: Etapa 0 — Setup de infraestructura.
+- Qué se completó: Proyecto Next.js + Supabase creado y conectado, deploy en Vercel funcionando, variables de entorno configuradas, endpoint /api/test-connection y página /test verificaron conexión exitosa tanto a Supabase como a la API de Mercado Público.
+- Qué quedó pendiente / a medias: Nada de la Etapa 0. Lista para empezar Etapa 1.
+- Decisiones tomadas que no estaban en el plan original: Ninguna.
+- Bloqueos o cosas que el humano debe resolver: Ninguno.
+- Próximo paso sugerido: comenzar Etapa 1 (autenticación y control de trial vía RLS).
+
+### [2026-08-15] — Agente/sesión: Claude (Etapa 1 completada)
+- Etapa en la que se trabajó: Etapa 1 — Autenticación y control de trial.
+- Qué se completó: Tabla perfiles con trigger automático al registrarse, función trial_vigente() como patrón reutilizable para RLS futuro, páginas de login/registro/logout, callback de confirmación de correo, y pantalla condicional de "trial vencido" vs "bienvenido con días restantes" en app/page.tsx.
+- Qué quedó pendiente / a medias: Nada de la Etapa 1. Lista para empezar Etapa 2.
+- Decisiones tomadas que no estaban en el plan original:
+  1. Se renombró middleware.ts a proxy.ts (Next.js 16 deprecó la convención "middleware" en favor de "proxy"; misma lógica, solo cambia el nombre del archivo y de la función exportada).
+  2. Se otorgó explícitamente `GRANT SELECT, UPDATE ON perfiles TO authenticated` — al crear la tabla por SQL Editor (no por Table Editor visual), Supabase no otorga este permiso base automáticamente, y sin él las políticas RLS nunca llegan a evaluarse (error 42501 "permission denied").
+  3. Se desactivó temporalmente "Confirm email" en Supabase Auth porque el servicio de correo gratuito por defecto tiene un límite muy bajo de envíos por hora. Se reactivará en la Etapa 5 al configurar Resend como proveedor de correo propio.
+- Bloqueos o cosas que el humano debe resolver: Ninguno. Nota para más adelante: recordar reactivar "Confirm email" en Etapa 5.
+- Próximo paso sugerido: comenzar Etapa 2 (ingesta diaria de licitaciones desde la API de Mercado Público).
