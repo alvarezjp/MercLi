@@ -110,10 +110,10 @@ Cada etapa tiene: objetivo, tareas, y **criterio de aceptación** (cómo saber q
 **Criterio de aceptación:** un usuario nuevo se registra, ve un `trial_fin` correcto, y si se le fuerza manualmente una fecha pasada en la base de datos, deja de ver datos y le aparece la pantalla de trial vencido — sin tocar su sesión de Auth.
 
 ### Etapa 2 — Ingesta diaria de licitaciones
-- [ ] Cliente HTTP hacia `api.mercadopublico.cl` (Edge Function) usando el ticket real
-- [ ] Guardar/actualizar licitaciones del día en la tabla `licitaciones` (upsert por `codigo`)
-- [ ] Configurar `pg_cron` para ejecutar esta función una vez al día
-- [ ] Manejo de errores/reintento si la API falla ese día
+- [x] Cliente HTTP hacia `api.mercadopublico.cl` (Edge Function) usando el ticket real
+- [x] Guardar/actualizar licitaciones del día en la tabla `licitaciones` (upsert por `codigo`)
+- [x] Configurar `pg_cron` para ejecutar esta función una vez al día
+- [x] Manejo de errores/reintento si la API falla ese día
 
 **Criterio de aceptación:** al día siguiente de desplegado, la tabla `licitaciones` tiene registros nuevos sin intervención manual.
 
@@ -196,3 +196,16 @@ Cada etapa tiene: objetivo, tareas, y **criterio de aceptación** (cómo saber q
   3. Se desactivó temporalmente "Confirm email" en Supabase Auth porque el servicio de correo gratuito por defecto tiene un límite muy bajo de envíos por hora. Se reactivará en la Etapa 5 al configurar Resend como proveedor de correo propio.
 - Bloqueos o cosas que el humano debe resolver: Ninguno. Nota para más adelante: recordar reactivar "Confirm email" en Etapa 5.
 - Próximo paso sugerido: comenzar Etapa 2 (ingesta diaria de licitaciones desde la API de Mercado Público).
+
+### [2026-08-17] — Agente/sesión: Claude (Etapa 2 completada)
+- Etapa en la que se trabajó: Etapa 2 — Ingesta diaria de licitaciones.
+- Qué se completó: Tabla `licitaciones` con RLS + GRANT explícito, Edge Function `ingesta-diaria` (supabase/functions/ingesta-diaria/index.ts) que descarga el listado diario de la API de Mercado Público y hace upsert por código, desplegada con --no-verify-jwt. Cron diario configurado con pg_cron + pg_net (job "ingesta-diaria-licitaciones", 03:00 UTC). Tabla `logs_ingesta` que registra cada ejecución (éxito con/sin resultados, o fallo con mensaje de error).
+- Qué quedó pendiente / a medias: Nada de la Etapa 2. Lista para empezar Etapa 3.
+- Decisiones tomadas que no estaban en el plan original:
+  1. Se agregó la tabla `logs_ingesta` (no estaba en el modelo de datos original de la sección 3 del plan) para poder diagnosticar fallas de la ingesta diaria sin depender solo de los logs de Supabase.
+  2. Se confirmó que el sistema de llaves de Supabase está migrando de anon/service_role a publishable/secret (SUPABASE_PUBLISHABLE_KEYS / SUPABASE_SECRET_KEYS); la Edge Function soporta ambos sistemas con fallback automático.
+  3. Se confirmó vía prueba real que el endpoint de listado diario de la API de Mercado Público NO incluye organismo comprador ni monto estimado, y que el estado viene como código numérico (CodigoEstado), no como texto. Pendiente para Etapa 3/4: decidir si se traduce CodigoEstado a texto legible y si vale la pena llamar al endpoint de detalle por licitación para obtener organismo/monto (actualmente quedan null en la tabla).
+  4. Lección repetida de la Etapa 1: `service_role` tampoco tiene GRANT automático en tablas creadas por SQL Editor en este proyecto — hay que otorgarlo explícitamente en cada tabla nueva que una Edge Function necesite escribir (GRANT INSERT/SELECT/UPDATE según corresponda a service_role), no solo a `authenticated`.
+  5. El CLI de Supabase no soporta `npm install -g supabase` (deprecado) ni el subcomando `invoke` en la versión actual — se usa `npx supabase` instalado como devDependency, y se prueban las funciones con `curl` directo a la URL en vez de `supabase functions invoke`.
+- Bloqueos o cosas que el humano debe resolver: Ninguno.
+- Próximo paso sugerido: comenzar Etapa 3 (búsqueda y filtrado por palabra clave). Considerar primero si se resuelve el punto 3 (organismo/estado legible) antes o durante esa etapa, ya que afecta directamente lo que el usuario va a ver en pantalla.
