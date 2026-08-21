@@ -2,10 +2,7 @@ import { redirect } from 'next/navigation'
 import { createClient } from '@/utils/supabase/server'
 import LogoutButton from '@/components/LogoutButton'
 
-// Ubicación en el proyecto: app/page.tsx (reemplaza la página default de Next.js)
-// Server Component: corre en el servidor, así que puede leer la sesión y el
-// perfil antes de renderizar nada — el usuario nunca ve un "flash" del
-// dashboard antes de que lo redirijan.
+// Ubicación en el proyecto: app/page.tsx (reemplaza la versión de la Etapa 1)
 
 export default async function HomePage() {
   const supabase = await createClient()
@@ -25,7 +22,6 @@ export default async function HomePage() {
     .single()
 
   if (error || !perfil) {
-    console.error('Error al cargar perfil:', error)
     return (
       <div style={{ maxWidth: 480, margin: '80px auto', fontFamily: 'sans-serif' }}>
         <h1>No pudimos cargar tu perfil</h1>
@@ -65,16 +61,76 @@ export default async function HomePage() {
     (new Date(perfil.trial_fin).getTime() - Date.now()) / (1000 * 60 * 60 * 24)
   )
 
+  const { data: licitaciones, error: errorLicitaciones } = await supabase.rpc(
+    'buscar_licitaciones_por_keywords',
+    { p_user_id: user.id }
+  )
+
   return (
-    <div style={{ maxWidth: 600, margin: '80px auto', fontFamily: 'sans-serif' }}>
+    <div style={{ maxWidth: 800, margin: '60px auto', fontFamily: 'sans-serif', padding: '0 16px' }}>
       <h1>Bienvenido</h1>
+
       {perfil.plan === 'trial' && (
         <p style={{ background: 'green', padding: 12, borderRadius: 8 }}>
           Estás en período de prueba. Te quedan <strong>{diasRestantes}</strong> día(s).
         </p>
       )}
-      <p>Aquí vamos a construir el listado de licitaciones en las próximas etapas.</p>
-      <LogoutButton />
+
+      <p style={{ marginBottom: 24 }}>
+        <a href="/keywords">Gestionar mis palabras clave →</a>
+      </p>
+
+      <h2>Licitaciones que coinciden con tus palabras clave</h2>
+
+      {errorLicitaciones && (
+        <p style={{ color: 'red' }}>
+          No se pudieron cargar las licitaciones: {errorLicitaciones.message}
+        </p>
+      )}
+
+      {!errorLicitaciones && (!licitaciones || licitaciones.length === 0) && (
+        <p>
+          No hay licitaciones que coincidan todavía. Agrega o revisa tus{' '}
+          <a href="/keywords">palabras clave</a>.
+        </p>
+      )}
+
+      {licitaciones && licitaciones.length > 0 && (
+        <ul style={{ listStyle: 'none', padding: 0 }}>
+          {licitaciones.map((lic: any) => (
+            <li
+              key={lic.codigo}
+              style={{
+                border: '1px solid #eee',
+                borderRadius: 8,
+                padding: 16,
+                marginBottom: 12,
+              }}
+            >
+              <h3 style={{ margin: '0 0 8px' }}>{lic.nombre}</h3>
+              <p style={{ margin: '4px 0', color: '#555' }}>
+                {lic.organismo ?? 'Organismo no disponible todavía'}
+              </p>
+              <p style={{ margin: '4px 0' }}>
+                Estado: <strong>{lic.estado ?? 'Sin información'}</strong>
+                {lic.monto_estimado && (
+                  <> · Monto estimado: ${Number(lic.monto_estimado).toLocaleString('es-CL')}</>
+                )}
+              </p>
+              <p style={{ margin: '4px 0', fontSize: 14, color: '#888' }}>
+                Código: {lic.codigo}
+                {lic.fecha_cierre && (
+                  <> · Cierra: {new Date(lic.fecha_cierre).toLocaleDateString('es-CL')}</>
+                )}
+              </p>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div style={{ marginTop: 32 }}>
+        <LogoutButton />
+      </div>
     </div>
   )
 }

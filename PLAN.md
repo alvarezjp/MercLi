@@ -118,9 +118,9 @@ Cada etapa tiene: objetivo, tareas, y **criterio de aceptación** (cómo saber q
 **Criterio de aceptación:** al día siguiente de desplegado, la tabla `licitaciones` tiene registros nuevos sin intervención manual.
 
 ### Etapa 3 — Búsqueda y filtrado por palabra clave
-- [ ] Tabla/UI para que el usuario agregue y elimine palabras clave
-- [ ] Query de filtrado (ILIKE o Full Text Search de Postgres sobre `nombre`/`raw_json`)
-- [ ] Lista de licitaciones en el frontend, filtrada por las keywords activas del usuario
+- [x] Tabla/UI para que el usuario agregue y elimine palabras clave
+- [x] Query de filtrado (ILIKE o Full Text Search de Postgres sobre `nombre`/`raw_json`)
+- [x] Lista de licitaciones en el frontend, filtrada por las keywords activas del usuario
 
 **Criterio de aceptación:** usuario agrega una keyword y ve solo licitaciones que la contienen, sin recargar toda la base.
 
@@ -209,3 +209,28 @@ Cada etapa tiene: objetivo, tareas, y **criterio de aceptación** (cómo saber q
   5. El CLI de Supabase no soporta `npm install -g supabase` (deprecado) ni el subcomando `invoke` en la versión actual — se usa `npx supabase` instalado como devDependency, y se prueban las funciones con `curl` directo a la URL en vez de `supabase functions invoke`.
 - Bloqueos o cosas que el humano debe resolver: Ninguno.
 - Próximo paso sugerido: comenzar Etapa 3 (búsqueda y filtrado por palabra clave). Considerar primero si se resuelve el punto 3 (organismo/estado legible) antes o durante esa etapa, ya que afecta directamente lo que el usuario va a ver en pantalla.
+### [2026-08-21] — Agente/sesión: Claude (Etapa 2 — enriquecimiento de organismo/monto/estado)
+- Etapa en la que se trabajó: Etapa 2 (extensión posterior al cierre inicial).
+- Qué se completó: Se agregó un "Paso B" a la Edge Function ingesta-diaria que enriquece hasta 150 licitaciones por ejecución (las que tengan organismo = null, ya sean nuevas del día o backlog de días anteriores) llamando al endpoint de detalle de la API (?codigo=...&ticket=...) en tandas de 5 simultáneas. Se agregaron las columnas licitaciones.raw_json_detalle (jsonb) y logs_ingesta.cantidad_enriquecidas (integer).
+- Qué quedó pendiente / a medias: El backlog inicial de ~1.249 licitaciones se enriquece a razón de 150 por ejecución diaria — tomará varios días en ponerse al día por completo. No es necesario intervenir, se resuelve solo con el cron diario ya configurado.
+- Decisiones tomadas que no estaban en el plan original:
+  1. Se confirmaron los nombres de campo exactos del endpoint de detalle contra la documentación oficial (PDF "Diccionario de Datos - Licitaciones"): Comprador.NombreOrganismo, MontoEstimado, Estado (texto). El endpoint de listado diario NO trae estos campos, solo CodigoExterno, Nombre, FechaCierre y CodigoEstado (numérico).
+  2. Se descubrieron y corrigieron 3 bugs reales durante las pruebas: (a) GRANT faltante para service_role en la tabla licitaciones — mismo patrón que perfiles y logs_ingesta, ahora la regla es otorgar GRANT a service_role en toda tabla nueva desde el primer bloque SQL; (b) el listado diario de la API puede traer códigos de licitación duplicados, lo que rompía el upsert (error "ON CONFLICT DO UPDATE command cannot affect row a second time") — se deduplcia por código antes de guardar; (c) Postgres exige que las columnas NOT NULL (nombre) tengan valor en la fila candidata de un upsert aunque la operación termine siendo un UPDATE — se soluciona reenviando el valor existente de esa columna en vez de omitirlo.
+  3. Se mejoró el manejo de errores de la función: ahora extrae correctamente el mensaje de errores que no son instancias de Error de JavaScript (como los errores de Postgres/Supabase), que antes se perdían como "[object Object]".
+- Bloqueos o cosas que el humano debe resolver: Ninguno.
+- Próximo paso sugerido: comenzar Etapa 3 (búsqueda y filtrado por palabra clave). Ya no hay pendiente de organismo/estado — se puede filtrar y mostrar con datos completos desde el principio.
+### [2026-08-21] — Agente/sesión: Claude (Etapa 3 completada)
+- Etapa en la que se trabajó: Etapa 3 — Búsqueda y filtrado por palabra clave.
+- Qué se completó: Tabla keywords_usuario con RLS (exige trial_vigente para select/insert, no para update/delete) y GRANT a authenticated desde el inicio. Página app/keywords/page.tsx para agregar/eliminar keywords (eliminar hace delete real, no soft-delete, aunque la columna `activo` queda disponible para uso futuro). Función SQL public.buscar_licitaciones_por_keywords(p_user_id uuid) que hace el join entre licitaciones y keywords_usuario con ILIKE, SIN security definer (para heredar RLS automáticamente). app/page.tsx actualizado: reemplaza el placeholder de la Etapa 1 con la lista real de licitaciones vía supabase.rpc(...), mostrando nombre, organismo, estado y monto.
+- Qué quedó pendiente / a medias:
+  1. PENDIENTE TÉCNICO IMPORTANTE — Migrar de ILIKE a Full Text Search de Postgres. Ahora mismo el filtrado usa `l.nombre ilike '%' || k.palabra_clave || '%'`, que es simple pero tiene limitaciones conocidas: no maneja variaciones de tilde/acento de forma inteligente (ej. "informatica" no calza con "informática" salvo coincidencia exacta de caracteres), no ordena por relevancia, y con muchas keywords o una tabla `licitaciones` grande puede volverse lento porque ILIKE con comodín al inicio (`%palabra%`) no puede usar un índice B-tree normal.
+     Cuando se aborde esto, el cambio sugerido es:
+     a) Agregar una columna generada `nombre_busqueda tsvector` a `licitaciones` (generada a partir de `nombre`, con `to_tsvector('spanish', nombre)` para que maneje acentos/plurales correctamente en español).
+     b) Crear un índice GIN sobre esa columna: `create index licitaciones_busqueda_idx on licitaciones using gin(nombre_busqueda);`.
+     c) Reemplazar la condición del JOIN en `buscar_licitaciones_por_keywords` por `l.nombre_busqueda @@ plainto_tsquery('spanish', k.palabra_clave)`.
+     d) Esta misma función se reutiliza en la Etapa 5 para las notificaciones — el cambio se hace en un solo lugar y beneficia a ambas partes automáticamente.
+     No es urgente para el volumen actual del MVP (1 usuario, ~1.249 licitaciones/día), pero si se agregan más usuarios o el filtrado se siente lento, esta es la primera optimización a aplicar.
+  2. No se agregó todavía ningún link de navegación permanente entre "/" y "/keywords" más allá del texto plano ya incluido — suficiente para el MVP, se puede mejorar con un header/nav real en una iteración de pulido visual (podría ser parte de la Etapa 7).
+- Decisiones tomadas que no estaban en el plan original: Ninguna decisión nueva de arquitectura; se aplicó la lección de GRANT explícito desde el inicio, sin incidentes esta vez.
+- Bloqueos o cosas que el humano debe resolver: Ninguno.
+- Próximo paso sugerido: comenzar Etapa 4 (guía visual de estado: nueva/vista/postulada).
