@@ -125,9 +125,10 @@ Cada etapa tiene: objetivo, tareas, y **criterio de aceptación** (cómo saber q
 **Criterio de aceptación:** usuario agrega una keyword y ve solo licitaciones que la contienen, sin recargar toda la base.
 
 ### Etapa 4 — Guía visual de estado (vista/postulada)
-- [ ] Tabla `licitacion_usuario_estado` conectada a la UI
-- [ ] Botones/acciones "marcar como vista" y "marcar como postulada"
-- [ ] Indicador visual (color/badge) por licitación según su estado
+- [x] Tabla `licitacion_usuario_estado` conectada a la UI
+- [x] Botones/acciones "marcar como vista" y "marcar como postulada"
+- [x] Indicador visual (color/badge) por licitación según su estado
+- [x] Vista de detalle en pestaña nueva con botón directo a Mercado Público, que marca automáticamente como "vista" al abrirse (agregado durante la implementación, no estaba en el plan original)
 
 **Criterio de aceptación:** el estado persiste al recargar la página y al volver a loguearse.
 
@@ -234,3 +235,16 @@ Cada etapa tiene: objetivo, tareas, y **criterio de aceptación** (cómo saber q
 - Decisiones tomadas que no estaban en el plan original: Ninguna decisión nueva de arquitectura; se aplicó la lección de GRANT explícito desde el inicio, sin incidentes esta vez.
 - Bloqueos o cosas que el humano debe resolver: Ninguno.
 - Próximo paso sugerido: comenzar Etapa 4 (guía visual de estado: nueva/vista/postulada).
+### [2026-08-21] — Agente/sesión: Claude (Etapa 4 completada)
+- Etapa en la que se trabajó: Etapa 4 — Guía visual de estado (vista/postulada), incluyendo una extensión pedida durante la implementación.
+- Qué se completó:
+  1. Tabla licitacion_usuario_estado con primary key compuesta (user_id, codigo_licitacion) — decisión que se aparta del modelo de datos original de la sección 3 del plan (que tenía un `id` propio): se usó PK compuesta para que el upsert por (user_id, codigo) sea directo sin necesitar un select previo. Solo existen los valores 'vista' y 'postulada' en la tabla; 'nueva' es la ausencia de fila (se resuelve con COALESCE en la consulta), para no escribir una fila por cada licitación que el usuario nunca ha tocado.
+  2. Función buscar_licitaciones_por_keywords recreada (drop + create, no se puede cambiar el tipo de retorno con OR REPLACE) para incluir estado_usuario vía LEFT JOIN con licitacion_usuario_estado.
+  3. Componente components/ListaLicitaciones.tsx (Client Component) con badges de color por estado y botones para marcar vista/postulada, usando router.refresh() para mantener sincronizado con la base de datos real en vez de estado local optimista.
+  4. Botón "Ver detalle en Mercado Público": abre la ficha real de la licitación en pestaña nueva y marca automáticamente como "vista" (solo si el estado actual es 'nueva', nunca retrocede desde 'postulada'). URL confirmada con prueba real del usuario: http://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?idlicitacion={codigo} — Mercado Público cifra este parámetro del lado del cliente (por eso la URL pública que ve un usuario muestra un token `qs=` distinto), pero acepta el código de licitación en texto plano como parámetro de entrada. No hay forma confirmada de generar el token cifrado nosotros mismos, así que se depende de este comportamiento del sitio de Mercado Público en vez de un link 100% "oficial" documentado.
+- Qué quedó pendiente / a medias: Ninguno.
+- Decisiones tomadas que no estaban en el plan original:
+  1. Se agregó la función completa de "ver detalle + redirección a Mercado Público" — no estaba en el plan original de la sección 4 (Etapa 4), surgió como requerimiento durante la implementación.
+  2. RIESGO A VIGILAR: la URL de redirección a Mercado Público (http://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?idlicitacion=...) no está documentada oficialmente por ChileCompra — se descubrió por inspección manual del sitio y se confirmó con una prueba real. Si Mercado Público cambia su sitio en el futuro, este botón podría dejar de funcionar sin aviso. No hay forma de detectarlo automáticamente; si un usuario reporta que el botón ya no lleva a la ficha correcta, este es el primer lugar a revisar.
+- Bloqueos o cosas que el humano debe resolver: Ninguno.
+- Próximo paso sugerido: comenzar Etapa 5 (notificaciones por email y WhatsApp). Recordar que buscar_licitaciones_por_keywords (con su lógica de ILIKE, pendiente de migrar a Full Text Search) se reutiliza directamente para detectar coincidencias nuevas que notificar.

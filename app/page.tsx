@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/utils/supabase/server'
 import LogoutButton from '@/components/LogoutButton'
+import ListaLicitaciones from '@/components/ListaLicitaciones'
 
 // Ubicación en el proyecto: app/page.tsx (reemplaza la versión de la Etapa 1)
 
@@ -71,7 +72,7 @@ export default async function HomePage() {
       <h1>Bienvenido</h1>
 
       {perfil.plan === 'trial' && (
-        <p style={{ background: 'green', padding: 12, borderRadius: 8 }}>
+        <p style={{ background: '#fff3cd', padding: 12, borderRadius: 8 }}>
           Estás en período de prueba. Te quedan <strong>{diasRestantes}</strong> día(s).
         </p>
       )}
@@ -88,44 +89,8 @@ export default async function HomePage() {
         </p>
       )}
 
-      {!errorLicitaciones && (!licitaciones || licitaciones.length === 0) && (
-        <p>
-          No hay licitaciones que coincidan todavía. Agrega o revisa tus{' '}
-          <a href="/keywords">palabras clave</a>.
-        </p>
-      )}
-
-      {licitaciones && licitaciones.length > 0 && (
-        <ul style={{ listStyle: 'none', padding: 0 }}>
-          {licitaciones.map((lic: any) => (
-            <li
-              key={lic.codigo}
-              style={{
-                border: '1px solid #eee',
-                borderRadius: 8,
-                padding: 16,
-                marginBottom: 12,
-              }}
-            >
-              <h3 style={{ margin: '0 0 8px' }}>{lic.nombre}</h3>
-              <p style={{ margin: '4px 0', color: '#555' }}>
-                {lic.organismo ?? 'Organismo no disponible todavía'}
-              </p>
-              <p style={{ margin: '4px 0' }}>
-                Estado: <strong>{lic.estado ?? 'Sin información'}</strong>
-                {lic.monto_estimado && (
-                  <> · Monto estimado: ${Number(lic.monto_estimado).toLocaleString('es-CL')}</>
-                )}
-              </p>
-              <p style={{ margin: '4px 0', fontSize: 14, color: '#888' }}>
-                Código: {lic.codigo}
-                {lic.fecha_cierre && (
-                  <> · Cierra: {new Date(lic.fecha_cierre).toLocaleDateString('es-CL')}</>
-                )}
-              </p>
-            </li>
-          ))}
-        </ul>
+      {!errorLicitaciones && (
+        <ListaLicitaciones licitaciones={licitaciones ?? []} userId={user.id} />
       )}
 
       <div style={{ marginTop: 32 }}>
