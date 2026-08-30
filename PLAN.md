@@ -133,10 +133,10 @@ Cada etapa tiene: objetivo, tareas, y **criterio de aceptación** (cómo saber q
 **Criterio de aceptación:** el estado persiste al recargar la página y al volver a loguearse.
 
 ### Etapa 5 — Notificaciones
-- [ ] Integración Resend para email
-- [ ] Integración Twilio WhatsApp Sandbox para demo
-- [ ] Lógica en el cron diario: comparar licitaciones nuevas del día contra keywords activas, y contra `notificaciones_enviadas` para no repetir
-- [ ] Enviar notificación por email y WhatsApp cuando corresponda, y registrar en `notificaciones_enviadas`
+- [x] Integración Resend para email
+- [ ] Integración Twilio WhatsApp Sandbox para demo — PAUSADO, ver registro de avance: se migró el intento a Meta WhatsApp Cloud API por bloqueo de fondos en Twilio, pero se decidió posponer WhatsApp completamente para priorizar la demo con el cliente. Email cubre la funcionalidad central por ahora.
+- [x] Lógica en el cron diario: comparar licitaciones nuevas del día contra keywords activas, y contra `notificaciones_enviadas` para no repetir
+- [x] Enviar notificación por email cuando corresponda, y registrar en `notificaciones_enviadas` (WhatsApp pendiente, ver arriba)
 
 **Criterio de aceptación:** al aparecer una licitación nueva que calza con una keyword, el usuario recibe correo y WhatsApp el mismo día, una sola vez.
 
@@ -248,3 +248,24 @@ Cada etapa tiene: objetivo, tareas, y **criterio de aceptación** (cómo saber q
   2. RIESGO A VIGILAR: la URL de redirección a Mercado Público (http://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?idlicitacion=...) no está documentada oficialmente por ChileCompra — se descubrió por inspección manual del sitio y se confirmó con una prueba real. Si Mercado Público cambia su sitio en el futuro, este botón podría dejar de funcionar sin aviso. No hay forma de detectarlo automáticamente; si un usuario reporta que el botón ya no lleva a la ficha correcta, este es el primer lugar a revisar.
 - Bloqueos o cosas que el humano debe resolver: Ninguno.
 - Próximo paso sugerido: comenzar Etapa 5 (notificaciones por email y WhatsApp). Recordar que buscar_licitaciones_por_keywords (con su lógica de ILIKE, pendiente de migrar a Full Text Search) se reutiliza directamente para detectar coincidencias nuevas que notificar.
+### [2026-08-30] — Agente/sesión: Claude (Etapa 5 — email completo, WhatsApp pausado)
+- Etapa en la que se trabajó: Etapa 5 — Notificaciones.
+- Qué se completó:
+  1. Tabla notificaciones_enviadas con restricción unique (user_id, codigo_licitacion, canal) — permite upsert con ignoreDuplicates para evitar notificaciones duplicadas incluso si la función corre dos veces.
+  2. Columna perfiles.telefono_whatsapp (agregada para uso futuro de WhatsApp, actualmente sin UI para que el usuario la configure — se setea manualmente por SQL).
+  3. Función SQL buscar_notificaciones_pendientes() que cruza perfiles activos × keywords activas × licitaciones × qué ya se notificó por cada canal, sin necesitar security definer (la llama la Edge Function con service_role, que ya bypasea RLS por sí solo).
+  4. Edge Function supabase/functions/enviar-notificaciones/index.ts: agrupa coincidencias por usuario (un correo por usuario, no uno por licitación), envía por Resend, registra en notificaciones_enviadas con upsert idempotente. Probado con éxito: 13 correos enviados correctamente en la primera prueba real.
+  5. Cron diario "notificaciones-diarias" a las 03:30 UTC (30 min después de "ingesta-diaria-licitaciones" a las 03:00 UTC, para darle margen a que la ingesta termine antes de buscar coincidencias nuevas).
+  6. Secret APP_URL configurado con la URL real de Vercel, usada en el link de los correos.
+- Qué quedó pendiente / a medias:
+  1. WHATSAPP PAUSADO POR DECISIÓN DE NEGOCIO, no por bloqueo técnico sin salida. Historial completo para quien retome esto:
+     - Se intentó con Twilio WhatsApp Sandbox: las credenciales tuvieron 2 rondas de errores (Account SID/Auth Token mal copiados), y luego se descubrió que Twilio exige usar Content Templates (no texto libre) para mensajes "business-initiated" como los nuestros — esto no es negociable, es política de WhatsApp a través de Twilio.
+     - Al intentar crear la plantilla en Twilio, la cuenta trial bloqueó el Content Template Builder pidiendo agregar fondos (~$20 USD mínimo) para desbloquearlo.
+     - Se evaluó migrar a Meta WhatsApp Cloud API directamente (el camino de producción que ya estaba planeado desde el inicio) — permite crear y probar plantillas gratis con hasta 5 números de prueba, sin bloqueo de fondos. Se llegó a crear la cuenta de desarrollador y la App en Meta for Developers (Paso 1 de la guía de migración), pero se decidió PAUSAR ahí mismo para priorizar tener una demo lista pronto — el email ya demuestra la funcionalidad central de notificaciones automáticas.
+  2. El código de enviar-notificaciones/index.ts YA fue modificado para usar ContentSid/ContentVariables de Twilio (no texto libre) — si se retoma WhatsApp vía Meta en vez de Twilio, ese bloque de código de envío hay que reescribirlo para usar la Graph API de Meta (POST a graph.facebook.com/v20.0/{phone-number-id}/messages con components de tipo template), no el formato de Twilio. Son APIs distintas, no es un simple cambio de credenciales.
+  3. La columna perfiles.telefono_whatsapp no tiene UI — cuando se retome WhatsApp, hay que agregar un campo en alguna pantalla de configuración de perfil para que el usuario lo ingrese él mismo, en vez de configurarlo manualmente por SQL.
+- Decisiones tomadas que no estaban en el plan original:
+  1. Notificación agrupada por usuario (un correo con todas las coincidencias del día), no una notificación por licitación — decisión de UX no especificada en el plan original.
+  2. Se identificó que WhatsApp para negocio (mensajes iniciados por nosotros, no respuestas del usuario) requiere plantillas pre-aprobadas por política de WhatsApp — esto aplica sin importar el proveedor (Twilio o Meta directamente), no es una limitación específica de Twilio.
+- Bloqueos o cosas que el humano debe resolver: Ninguno urgente. Cuando se quiera retomar WhatsApp: decidir entre completar la migración a Meta (Pasos 2-8 de la guía, ya iniciada) o volver a Twilio agregando fondos.
+- Próximo paso sugerido: comenzar Etapa 6 (UX de trial y aviso previo) o Etapa 7 (pulido y demo), dado que el flujo de notificaciones central (email) ya está funcionando de punta a punta.

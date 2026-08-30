@@ -72,7 +72,7 @@ export default async function HomePage() {
       <h1>Bienvenido</h1>
 
       {perfil.plan === 'trial' && (
-        <p style={{ background: '#fff3cd', padding: 12, borderRadius: 8 }}>
+        <p style={{ background: 'green', padding: 12, borderRadius: 8 }}>
           Estás en período de prueba. Te quedan <strong>{diasRestantes}</strong> día(s).
         </p>
       )}
