@@ -141,8 +141,8 @@ Cada etapa tiene: objetivo, tareas, y **criterio de aceptación** (cómo saber q
 **Criterio de aceptación:** al aparecer una licitación nueva que calza con una keyword, el usuario recibe correo y WhatsApp el mismo día, una sola vez.
 
 ### Etapa 6 — UX de trial y aviso previo
-- [ ] Aviso visual en la UI de "te quedan X días de prueba"
-- [ ] Notificación automática (usando el mismo cron) 2 días antes de que expire el trial
+- [x] Aviso visual en la UI de "te quedan X días de prueba" (ya estaba implementado desde la Etapa 1, Paso 6)
+- [x] Notificación automática (usando el mismo cron) 2 días antes de que expire el trial
 
 **Criterio de aceptación:** un usuario con `trial_fin` en 2 días recibe un correo de aviso.
 
@@ -269,3 +269,10 @@ Cada etapa tiene: objetivo, tareas, y **criterio de aceptación** (cómo saber q
   2. Se identificó que WhatsApp para negocio (mensajes iniciados por nosotros, no respuestas del usuario) requiere plantillas pre-aprobadas por política de WhatsApp — esto aplica sin importar el proveedor (Twilio o Meta directamente), no es una limitación específica de Twilio.
 - Bloqueos o cosas que el humano debe resolver: Ninguno urgente. Cuando se quiera retomar WhatsApp: decidir entre completar la migración a Meta (Pasos 2-8 de la guía, ya iniciada) o volver a Twilio agregando fondos.
 - Próximo paso sugerido: comenzar Etapa 6 (UX de trial y aviso previo) o Etapa 7 (pulido y demo), dado que el flujo de notificaciones central (email) ya está funcionando de punta a punta.
+### [2026-08-30] — Agente/sesión: Claude (Etapa 6 completada)
+- Etapa en la que se trabajó: Etapa 6 — UX de trial y aviso previo.
+- Qué se completó: Columna perfiles.aviso_trial_enviado (booleano, no timestamp, porque este aviso se manda una sola vez por usuario). Edge Function supabase/functions/avisar-trial-por-vencer/index.ts que busca usuarios en trial con trial_fin dentro de los próximos 2 días y aviso_trial_enviado = false, les manda un correo vía Resend, y marca el booleano. Cron "aviso-trial-diario" a las 12:00 UTC (horario independiente de los otros dos jobs, sin dependencia entre ellos). El aviso visual en pantalla ya existía desde la Etapa 1.
+- Qué quedó pendiente / a medias: Ninguno.
+- Decisiones tomadas que no estaban en el plan original: Ninguna relevante.
+- Bloqueos o cosas que el humano debe resolver: Ninguno.
+- Próximo paso sugerido: Etapa 7 (pulido y demo) — es la última etapa del MVP original. Antes de la demo, revisar especialmente: (1) cargar datos de al menos 1-2 semanas para que no se vea vacío, (2) decidir si se resuelve el pendiente de Full Text Search de la Etapa 3, (3) decidir si se retoma WhatsApp (Meta, Paso 1 ya iniciado) antes o después de mostrarle al cliente.
