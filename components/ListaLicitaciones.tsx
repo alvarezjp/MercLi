@@ -12,6 +12,7 @@ type Licitacion = {
   monto_estimado: number | null
   estado: string | null
   fecha_cierre: string | null
+  fecha_publicacion: string | null
   estado_usuario: 'nueva' | 'vista' | 'postulada'
 }
 
@@ -122,6 +123,9 @@ export default function ListaLicitaciones({
 
             <p style={{ margin: '4px 0', fontSize: 14, color: '#888' }}>
               Código: {lic.codigo}
+              {lic.fecha_publicacion && (
+                <> · Publicada: {new Date(lic.fecha_publicacion).toLocaleDateString('es-CL')}</>
+              )}
               {lic.fecha_cierre && (
                 <> · Cierra: {new Date(lic.fecha_cierre).toLocaleDateString('es-CL')}</>
               )}

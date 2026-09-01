@@ -5,7 +5,12 @@ import ListaLicitaciones from '@/components/ListaLicitaciones'
 
 // Ubicación en el proyecto: app/page.tsx (reemplaza la versión de la Etapa 1)
 
-export default async function HomePage() {
+export default async function HomePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ orden?: string }>
+}) {
+  const { orden } = await searchParams
   const supabase = await createClient()
 
   const {
@@ -62,10 +67,20 @@ export default async function HomePage() {
     (new Date(perfil.trial_fin).getTime() - Date.now()) / (1000 * 60 * 60 * 24)
   )
 
-  const { data: licitaciones, error: errorLicitaciones } = await supabase.rpc(
+  const { data: licitacionesData, error: errorLicitaciones } = await supabase.rpc(
     'buscar_licitaciones_por_keywords',
     { p_user_id: user.id }
   )
+
+  // El orden por defecto que ya trae la función SQL es por relevancia. Si el
+  // usuario eligió "recientes", lo reordenamos aquí mismo en JavaScript —
+  // no hace falta una segunda consulta, el volumen por usuario es chico.
+  const licitaciones = [...(licitacionesData ?? [])]
+  if (orden === 'recientes') {
+    licitaciones.sort(
+      (a, b) => new Date(b.fecha_publicacion).getTime() - new Date(a.fecha_publicacion).getTime()
+    )
+  }
 
   return (
     <div style={{ maxWidth: 800, margin: '60px auto', fontFamily: 'sans-serif', padding: '0 16px' }}>
@@ -81,7 +96,19 @@ export default async function HomePage() {
         <a href="/keywords">Gestionar mis palabras clave →</a>
       </p>
 
-      <h2>Licitaciones que coinciden con tus palabras clave</h2>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h2>Licitaciones que coinciden con tus palabras clave</h2>
+        <div style={{ fontSize: 14 }}>
+          Ordenar por:{' '}
+          <a href="/" style={{ fontWeight: orden !== 'recientes' ? 700 : 400 }}>
+            Relevancia
+          </a>
+          {' · '}
+          <a href="/?orden=recientes" style={{ fontWeight: orden === 'recientes' ? 700 : 400 }}>
+            Más recientes
+          </a>
+        </div>
+      </div>
 
       {errorLicitaciones && (
         <p style={{ color: 'red' }}>
@@ -89,9 +116,7 @@ export default async function HomePage() {
         </p>
       )}
 
-      {!errorLicitaciones && (
-        <ListaLicitaciones licitaciones={licitaciones ?? []} userId={user.id} />
-      )}
+      {!errorLicitaciones && <ListaLicitaciones licitaciones={licitaciones} userId={user.id} />}
 
       <div style={{ marginTop: 32 }}>
         <LogoutButton />

@@ -10,8 +10,8 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 //    Se hace en tandas para no exceder el tiempo límite de la función ni golpear
 //    la API con demasiadas peticiones simultáneas.
 
-const MAX_ENRIQUECER = 150
-const CONCURRENCIA = 5
+const MAX_ENRIQUECER = 400
+const CONCURRENCIA = 8
 
 function obtenerServiceRoleKey(): string | undefined {
   const secretKeysRaw = Deno.env.get('SUPABASE_SECRET_KEYS')
@@ -52,11 +52,23 @@ async function obtenerDetalleLicitacion(codigo: string, ticket: string) {
   const detalle = data?.Listado?.[0]
   if (!detalle) return null
 
+  // Los ítems/productos vienen anidados en Items.Listado. Concatenamos
+  // nombre + descripción de cada uno en un solo texto para que el buscador
+  // (Full Text Search) los indexe junto con el nombre y la descripción
+  // general de la licitación.
+  const items: any[] = detalle.Items?.Listado ?? []
+  const productosTexto = items
+    .map((item) => [item.NombreProducto, item.Descripcion].filter(Boolean).join(' — '))
+    .filter(Boolean)
+    .join(' | ') || null
+
   return {
     codigo,
     organismo: detalle.Comprador?.NombreOrganismo ?? null,
     monto_estimado: typeof detalle.MontoEstimado === 'number' ? detalle.MontoEstimado : null,
     estado: detalle.Estado ?? null,
+    descripcion: detalle.Descripcion ?? null,
+    productos_texto: productosTexto,
     raw_json_detalle: detalle,
     actualizado_en: new Date().toISOString(),
   }
@@ -133,12 +145,16 @@ Deno.serve(async (_req) => {
       cantidadInsertadas = filasBase.length
     }
 
-    // --- Paso B: enriquecer licitaciones sin organismo asignado (nuevas o backlog) ---
-    const { data: pendientes, error: errorPendientes } = await supabase
-      .from('licitaciones')
-      .select('codigo, nombre')
-      .is('organismo', null)
-      .limit(MAX_ENRIQUECER)
+    // --- Paso B: enriquecer hasta MAX_ENRIQUECER licitaciones sin organismo
+    // asignado, priorizando las más recientes primero. A propósito NO se
+    // filtra por keywords activas: si algún día se agrega una keyword nueva,
+    // necesitamos que las licitaciones viejas también tengan descripción y
+    // productos capturados, no solo las que coincidían con keywords que
+    // existían en el momento de la ingesta.
+    const { data: pendientes, error: errorPendientes } = await supabase.rpc(
+      'codigos_pendientes_relevantes',
+      { p_limite: MAX_ENRIQUECER }
+    )
 
     if (errorPendientes) throw errorPendientes
 
