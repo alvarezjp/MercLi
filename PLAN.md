@@ -147,11 +147,30 @@ Cada etapa tiene: objetivo, tareas, y **criterio de aceptación** (cómo saber q
 **Criterio de aceptación:** un usuario con `trial_fin` en 2 días recibe un correo de aviso.
 
 ### Etapa 7 — Pulido y demo
-- [ ] Cargar datos reales de al menos 1-2 semanas para que la demo no se vea vacía
-- [ ] Revisar responsive/mobile básico
-- [ ] Checklist de demo: login → trial visible → agregar keyword → ver licitaciones → marcar estado → simular notificación
+- [x] Paso 1: revisar volumen de datos acumulados (hecho — se detectó y corrigió un problema real de cobertura de enriquecimiento, ver Etapa 8)
+- [ ] Paso 2: ajustes responsive/mobile — PAUSADO, se interrumpió para atender la Etapa 8 (más urgente: calidad de los datos/búsqueda)
+- [ ] Paso 3: checklist de demo — PAUSADO, mismo motivo
 
-**Criterio de aceptación:** se puede hacer la demo completa al cliente sin errores visibles.
+### Etapa 8 — Búsqueda avanzada y enriquecimiento profundo
+- [x] Ampliar el enriquecimiento para capturar Descripción e Items/productos de cada licitación (no solo organismo/monto/estado)
+- [x] Migrar el filtrado de ILIKE a Full Text Search de Postgres (soporta búsqueda multi-palabra y busca en nombre + descripción + productos)
+- [x] Ranking de relevancia (ts_rank) + selector de orden (relevancia / más recientes) en el frontend
+- [x] Mostrar fecha de publicación en la ficha de cada licitación
+- [ ] Pendiente futuro: programar un enriquecimiento más agresivo/completo en horario de bajo tráfico (a definir cuándo)
+
+### Etapa 9 — Enriquecimiento garantizado por llamada + aceleración de backlog
+- [x] Cron dividido en dos corridas diarias en vez de una: 00:00 y 12:00 hora Chile (03:00 y 15:00 UTC en horario de verano)
+- [x] Función SQL `codigos_sin_organismo(p_codigos text[])` — consulta puntual de qué códigos, entre una lista dada, aún no tienen organismo asignado
+- [x] Edge Function `ingesta-diaria` rediseñada en dos pasos de enriquecimiento con objetivos distintos:
+  - Paso B (GARANTIZADO, sin tope numérico): enriquece el 100% de los códigos que trajo el listado de ESA corrida específica, subiendo el resultado a la base por tandas (no espera al final), para no perder progreso si la función se corta por timeout
+  - Paso C (BEST EFFORT, basado en tiempo real, no en cantidad): si sobra presupuesto de ejecución después del Paso B (medido en milisegundos, con margen de seguridad bajo el límite de 150s del plan gratuito), usa el resto para avanzar el backlog histórico viejo — nunca compite por cupo con el Paso B
+  - `CONCURRENCIA` subida de 8 a 12 para compensar el volumen más alto por corrida (~625 códigos/corrida en vez de 400)
+- [ ] Pendiente: desplegar en producción y validar con datos reales (correr el SQL de la función nueva, redeploy de la Edge Function con `--no-verify-jwt`, probar con curl, y revisar `logs_ingesta` durante al menos 2-3 días para confirmar que no aparecen timeouts con `CONCURRENCIA=12`)
+
+**Criterio de aceptación:** revisando `logs_ingesta` en cualquier corrida, la cantidad enriquecida "de hoy" (Paso B) es igual a la cantidad insertada por el listado de esa misma corrida — es decir, ninguna licitación que entra en una llamada queda pendiente para la siguiente, sin depender de un número de tope adivinado.
+
+**Riesgo conocido, no resuelto todavía:** si algún día entran muchas más licitaciones de lo habitual (ej. cierre de mes fiscal, actualmente ~1.249/día es lo normal), el Paso B podría no alcanzar a terminar dentro del límite de 150s del plan gratuito. Como sube por tandas, no se pierde lo ya procesado, pero esa corrida específica quedaría con el Paso B incompleto hasta que la retome la siguiente corrida programada. No hay forma de detectarlo automáticamente todavía más que revisando `logs_ingesta` manualmente.
+
 
 ---
 
@@ -276,3 +295,39 @@ Cada etapa tiene: objetivo, tareas, y **criterio de aceptación** (cómo saber q
 - Decisiones tomadas que no estaban en el plan original: Ninguna relevante.
 - Bloqueos o cosas que el humano debe resolver: Ninguno.
 - Próximo paso sugerido: Etapa 7 (pulido y demo) — es la última etapa del MVP original. Antes de la demo, revisar especialmente: (1) cargar datos de al menos 1-2 semanas para que no se vea vacío, (2) decidir si se resuelve el pendiente de Full Text Search de la Etapa 3, (3) decidir si se retoma WhatsApp (Meta, Paso 1 ya iniciado) antes o después de mostrarle al cliente.
+
+### [2026-08-30] — Agente/sesión: Claude (Etapa 8 — búsqueda avanzada y enriquecimiento profundo)
+- Etapa en la que se trabajó: Etapa 8 (nueva, insertada antes de terminar la Etapa 7 por prioridad del usuario — calidad de búsqueda y cobertura de datos eran más urgentes que el pulido visual).
+- Qué se completó:
+  1. Se confirmó vía diccionario oficial de la API (Documentación API Mercado Publico - Licitaciones.pdf) que el endpoint de detalle SÍ trae Descripcion (campo #8) e Items/Listado con NombreProducto y Descripcion por producto (campos #84-97) — no se necesitó ninguna fuente de datos no oficial. Se descartó explícitamente una alternativa de terceros ("Compras Transparentes API" de Zoohash SPA) por no ser oficial de ChileCompra y tener documentación sin actualizar desde ~2015 — riesgo de depender de una fuente no confiable o abandonada para la funcionalidad central del producto.
+  2. Columnas nuevas en licitaciones: descripcion (text), productos_texto (text, concatenación de nombre+descripción de cada item separados por " | "), busqueda_vector (tsvector generado automáticamente con to_tsvector('spanish', nombre || descripcion || productos_texto), con índice GIN).
+  3. Edge Function ingesta-diaria actualizada: obtenerDetalleLicitacion ahora también extrae Descripcion e Items.Listado.
+  4. CAMBIO DE DISEÑO IMPORTANTE en el enriquecimiento (Paso B): se descartó la primera versión (codigos_pendientes_relevantes filtrando por coincidencia con keywords activas) porque dejaba sin enriquecer licitaciones viejas que no calzaban con keywords existentes al momento de la ingesta — si el usuario agregaba una keyword nueva después, esas licitaciones seguirían sin descripción/productos para siempre. Se cambió a un enfoque sin filtro de keywords, priorizando por fecha_publicacion desc, para que cualquier búsqueda futura tenga datos completos. Se subió MAX_ENRIQUECER de 150 a 400 y CONCURRENCIA de 5 a 8 para compensar el volumen mayor a cubrir.
+  5. Funciones SQL buscar_licitaciones_por_keywords y buscar_notificaciones_pendientes migradas de `ilike '%...%'` a `busqueda_vector @@ plainto_tsquery('spanish', k.palabra_clave)` — resuelve búsqueda multi-palabra (ej. "mantención endoscopio") con manejo de plurales/conjugaciones en español. buscar_licitaciones_por_keywords ahora también devuelve fecha_publicacion y relevancia (ts_rank).
+  6. Frontend: selector "Ordenar por: Relevancia / Más recientes" en app/page.tsx (ordena en JavaScript sobre los datos ya traídos, sin segunda consulta — volumen por usuario es chico). Fecha de publicación agregada a las tarjetas en components/ListaLicitaciones.tsx.
+- Qué quedó pendiente / a medias:
+  1. BACKLOG DE ENRIQUECIMIENTO: con ~1.249 licitaciones nuevas/día y 400 enriquecidas por ejecución, el sistema se pone al día con lo nuevo casi todos los días, pero el backlog histórico (~7.187 licitaciones al 30-08-2026, con la nueva lógica reiniciando el criterio de priorización) tomará aproximadamente 2-3 semanas en cubrirse por completo a este ritmo. Mientras tanto, búsquedas por descripción/productos en licitaciones antiguas pueden no encontrar coincidencias reales todavía.
+  2. PENDIENTE EXPLÍCITO DEL USUARIO: programar un enriquecimiento más agresivo (posiblemente sin límite de 400, o corriendo más de una vez al día) en un horario de bajo tráfico, para acelerar la cobertura completa. El horario específico queda por definir — el usuario pidió explícitamente dejarlo para más adelante.
+  3. La Etapa 7 (pulido y demo) quedó a medio camino — falta responsive/mobile y el checklist de demo.
+- Decisiones tomadas que no estaban en el plan original: Ver puntos 1 y 4 de arriba (descartar API de terceros, y el cambio de criterio de priorización del enriquecimiento de "por keyword" a "por recencia").
+- Bloqueos o cosas que el humano debe resolver: Ninguno urgente. Decidir cuándo y con qué frecuencia/límite correr el enriquecimiento agresivo pendiente (punto 2 de arriba).
+- Próximo paso sugerido: retomar la Etapa 7 (Pasos 2 y 3: responsive y checklist de demo) para dejar el MVP listo para mostrar, o resolver primero el enriquecimiento agresivo si la cobertura de datos es más urgente que el pulido visual para la fecha en que se planea la demo.
+
+### [2026-09-03] — Agente/sesión: Claude (Etapa 9 — diseño completo, despliegue pendiente)
+- Etapa en la que se trabajó: Etapa 9 (nueva) — enriquecimiento garantizado por llamada + aceleración de backlog. Retoma el pendiente explícito de la Etapa 8 ("programar un enriquecimiento más agresivo en horario de bajo tráfico"), pero con un diseño distinto al que se había anticipado ahí.
+- Qué se completó (a nivel de diseño y código, NO desplegado todavía):
+  1. Cron duplicado: se agregó el job `ingesta-mediodia-licitaciones` (15:00 UTC) además del `ingesta-diaria-licitaciones` existente (03:00 UTC) — ambos corresponden a 00:00 y 12:00 hora Chile durante horario de verano (vigente desde el 6-sep-2026 por Decreto 98).
+  2. Se descartó el enfoque de "solo tope numérico más alto" (subir MAX_ENRIQUECER a 500-600) porque no garantiza cobertura completa de lo que trae cada llamada — con ~1.249 licitaciones nuevas/día repartidas en 2 corridas (~625/corrida), cualquier tope fijo por debajo de eso deja licitaciones de esa misma llamada sin enriquecer.
+  3. Se rediseñó la Edge Function `ingesta-diaria` en dos pasos con objetivos distintos: Paso B (garantizado, sin tope, específico a los códigos de esa corrida) y Paso C (backlog histórico, best-effort, limitado por tiempo real de ejecución en vez de por cantidad).
+  4. Nueva función SQL `codigos_sin_organismo(p_codigos text[])`, complementaria a `codigos_pendientes_relevantes` (que se mantiene para el Paso C).
+- Qué quedó pendiente / a medias:
+  1. NADA DE ESTO ESTÁ DESPLEGADO TODAVÍA. Falta: correr el SQL de `codigos_sin_organismo` en el SQL Editor, reemplazar el contenido de `supabase/functions/ingesta-diaria/index.ts`, redesplegar con `npx supabase functions deploy ingesta-diaria --no-verify-jwt`, y probar manualmente con curl antes de dejar que lo tome el cron automático.
+  2. `CONCURRENCIA=12` no está probado en producción — subido desde 8 de forma preventiva por el mayor volumen por corrida, pero hay que confirmar en `logs_ingesta` que no genera timeouts.
+  3. No se validó todavía si el nombre del proyecto/comando de deploy usado aquí coincide exactamente con el de sesiones anteriores — se le pidió al usuario confirmarlo y no se ha recibido respuesta.
+- Decisiones tomadas que no estaban en el plan original:
+  1. Cambio de filosofía del enriquecimiento: de "tope fijo por corrida, sin distinguir origen" (Etapa 8) a "garantía completa de lo nuevo de esta llamada + backlog como mejor esfuerzo con el tiempo sobrante" (Etapa 9). Esto es una decisión explícita del usuario, motivada porque necesita que toda licitación mostrada al usuario final tenga datos completos para que la búsqueda por palabra clave funcione sin huecos.
+  2. Se documentó formalmente (en el código, como comentario) el riesgo de que un día con volumen anormalmente alto de licitaciones nuevas podría dejar el Paso B incompleto dentro del límite de 150s del plan gratuito — no se resolvió, solo se dejó visible para monitoreo manual.
+- Bloqueos o cosas que el humano debe resolver:
+  1. Ejecutar el SQL nuevo y desplegar la Edge Function actualizada (ver arriba) — sin esto, el código nuevo no está corriendo, solo existe como diseño.
+  2. Confirmar el comando/nombre de proyecto exacto para el deploy si difiere del usado en la Etapa 2.
+- Próximo paso sugerido: desplegar lo diseñado en esta etapa y dejarlo corriendo al menos 2-3 días revisando `logs_ingesta` antes de dar la Etapa 9 por cerrada. Si en ese monitoreo `CONCURRENCIA=12` genera timeouts, bajarlo de vuelta a 8-10. Recién después de confirmar que el Paso B cubre el 100% de "lo de cada llamada" de forma sostenida, retomar el punto pendiente de la Etapa 7 (responsive/mobile y checklist de demo).

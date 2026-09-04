@@ -2,16 +2,25 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 // Ubicación en el proyecto: supabase/functions/ingesta-diaria/index.ts
 //
-// Hace dos cosas cada vez que corre:
-// 1. Descarga el listado diario de licitaciones y las guarda/actualiza (como antes).
-// 2. Enriquece hasta MAX_ENRIQUECER licitaciones que todavía no tienen organismo
-//    asignado, llamando al endpoint de detalle por código. Esto incluye tanto
-//    las licitaciones nuevas de hoy como cualquier backlog de días anteriores.
-//    Se hace en tandas para no exceder el tiempo límite de la función ni golpear
-//    la API con demasiadas peticiones simultáneas.
+// Hace tres cosas cada vez que corre:
+// 1. Descarga el listado diario de licitaciones y las guarda/actualiza.
+// 2. Paso B — GARANTIZADO: enriquece TODOS los códigos que trajo el listado
+//    de ESTA corrida y que todavía no tienen organismo. Sin tope artificial:
+//    lo que entra en esta llamada, sale completo de esta llamada. Se sube
+//    incrementalmente (tanda por tanda) para no perder progreso si la
+//    función se corta por tiempo.
+// 3. Paso C — BEST EFFORT: si sobra tiempo de ejecución después del Paso B,
+//    usa el resto del presupuesto para avanzar el backlog histórico viejo.
+//    Nunca compite por cupo con el Paso B; si no sobra tiempo, simplemente
+//    no corre esta vez y no pasa nada.
 
-const MAX_ENRIQUECER = 400
-const CONCURRENCIA = 8
+const CONCURRENCIA = 12
+// Margen de seguridad bajo el límite del plan gratuito de Supabase (150s
+// wall-clock). Dejamos colchón para el resto de la función (fetch del
+// listado, upserts, logs).
+const LIMITE_TIEMPO_MS = 120_000
+const TIEMPO_MINIMO_PARA_INTENTAR_BACKLOG_MS = 20_000
+const TANDA_BACKLOG = 100
 
 function obtenerServiceRoleKey(): string | undefined {
   const secretKeysRaw = Deno.env.get('SUPABASE_SECRET_KEYS')
@@ -26,8 +35,6 @@ function obtenerServiceRoleKey(): string | undefined {
   return Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
 }
 
-// Ejecuta una lista de funciones async respetando un límite de concurrencia,
-// para no lanzar cientos de peticiones HTTP al mismo tiempo.
 async function ejecutarConConcurrencia<T>(
   tareas: (() => Promise<T>)[],
   limite: number
@@ -52,10 +59,6 @@ async function obtenerDetalleLicitacion(codigo: string, ticket: string) {
   const detalle = data?.Listado?.[0]
   if (!detalle) return null
 
-  // Los ítems/productos vienen anidados en Items.Listado. Concatenamos
-  // nombre + descripción de cada uno en un solo texto para que el buscador
-  // (Full Text Search) los indexe junto con el nombre y la descripción
-  // general de la licitación.
   const items: any[] = detalle.Items?.Listado ?? []
   const productosTexto = items
     .map((item) => [item.NombreProducto, item.Descripcion].filter(Boolean).join(' — '))
@@ -74,7 +77,41 @@ async function obtenerDetalleLicitacion(codigo: string, ticket: string) {
   }
 }
 
+// Enriquece una lista de {codigo, nombre} en tandas de `concurrencia`,
+// subiendo cada tanda a la base apenas termina (no espera al final) para no
+// perder progreso si la función se corta por timeout a mitad de camino.
+async function enriquecerYGuardarProgresivo(
+  pendientes: { codigo: string; nombre: string }[],
+  ticket: string,
+  supabase: ReturnType<typeof createClient>,
+  concurrencia: number
+): Promise<number> {
+  let total = 0
+  for (let i = 0; i < pendientes.length; i += concurrencia) {
+    const tanda = pendientes.slice(i, i + concurrencia)
+    const detalles = await Promise.all(
+      tanda.map(async (fila) => {
+        const detalle = await obtenerDetalleLicitacion(fila.codigo, ticket)
+        if (!detalle) return null
+        return { ...detalle, nombre: fila.nombre }
+      })
+    )
+    const filasValidas = detalles.filter((d) => d !== null)
+    if (filasValidas.length > 0) {
+      const { error } = await supabase
+        .from('licitaciones')
+        .upsert(filasValidas, { onConflict: 'codigo' })
+      if (error) throw error
+      total += filasValidas.length
+    }
+  }
+  return total
+}
+
 Deno.serve(async (_req) => {
+  const inicioEjecucion = Date.now()
+  const tiempoRestanteMs = () => LIMITE_TIEMPO_MS - (Date.now() - inicioEjecucion)
+
   let supabase: ReturnType<typeof createClient> | null = null
   let fecha: string | null = null
 
@@ -92,7 +129,7 @@ Deno.serve(async (_req) => {
 
     supabase = createClient(supabaseUrl, serviceRoleKey)
 
-    // --- Paso A: listado diario (igual que antes) ---
+    // --- Paso A: listado diario ---
     const partesFecha = new Intl.DateTimeFormat('en-CA', {
       timeZone: 'America/Santiago',
       year: 'numeric',
@@ -127,16 +164,13 @@ Deno.serve(async (_req) => {
             actualizado_en: new Date().toISOString(),
           }))
           .filter((fila) => fila.codigo && fila.nombre)
-          .map((fila) => [fila.codigo, fila]) // si hay códigos repetidos, se queda con el último
+          .map((fila) => [fila.codigo, fila])
       ).values()
     )
 
     let cantidadInsertadas = 0
 
     if (filasBase.length > 0) {
-      // Ojo: a propósito NO incluimos 'estado', 'organismo' ni 'monto_estimado'
-      // aquí. Así, si la licitación ya existía y ya estaba enriquecida, este
-      // upsert no pisa esos valores — solo actualiza lo que trae el listado diario.
       const { error } = await supabase
         .from('licitaciones')
         .upsert(filasBase, { onConflict: 'codigo' })
@@ -145,50 +179,56 @@ Deno.serve(async (_req) => {
       cantidadInsertadas = filasBase.length
     }
 
-    // --- Paso B: enriquecer hasta MAX_ENRIQUECER licitaciones sin organismo
-    // asignado, priorizando las más recientes primero. A propósito NO se
-    // filtra por keywords activas: si algún día se agrega una keyword nueva,
-    // necesitamos que las licitaciones viejas también tengan descripción y
-    // productos capturados, no solo las que coincidían con keywords que
-    // existían en el momento de la ingesta.
-    const { data: pendientes, error: errorPendientes } = await supabase.rpc(
-      'codigos_pendientes_relevantes',
-      { p_limite: MAX_ENRIQUECER }
-    )
+    // --- Paso B (GARANTIZADO): enriquecer TODO lo que trajo esta llamada ---
+    let cantidadEnriquecidasHoy = 0
 
-    if (errorPendientes) throw errorPendientes
+    if (filasBase.length > 0) {
+      const codigosDeEstaLlamada = filasBase.map((f) => f.codigo)
 
-    let cantidadEnriquecidas = 0
-
-    if (pendientes && pendientes.length > 0) {
-      const tareas = pendientes.map(
-        (fila: { codigo: string; nombre: string }) => async () => {
-          const detalle = await obtenerDetalleLicitacion(fila.codigo, ticket)
-          if (!detalle) return null
-          // Reenviamos 'nombre' sin modificarlo: Postgres lo exige por la
-          // restricción NOT NULL al construir la fila candidata de ON CONFLICT,
-          // aunque en la práctica esta operación siempre termina en UPDATE.
-          return { ...detalle, nombre: fila.nombre }
-        }
+      const { data: pendientesDeHoy, error: errorPendHoy } = await supabase.rpc(
+        'codigos_sin_organismo',
+        { p_codigos: codigosDeEstaLlamada }
       )
-      const detalles = await ejecutarConConcurrencia(tareas, CONCURRENCIA)
-      const filasEnriquecidas = detalles.filter((d) => d !== null)
+      if (errorPendHoy) throw errorPendHoy
 
-      if (filasEnriquecidas.length > 0) {
-        const { error: errorEnriquecer } = await supabase
-          .from('licitaciones')
-          .upsert(filasEnriquecidas, { onConflict: 'codigo' })
-
-        if (errorEnriquecer) throw errorEnriquecer
-        cantidadEnriquecidas = filasEnriquecidas.length
+      if (pendientesDeHoy && pendientesDeHoy.length > 0) {
+        cantidadEnriquecidasHoy = await enriquecerYGuardarProgresivo(
+          pendientesDeHoy,
+          ticket,
+          supabase,
+          CONCURRENCIA
+        )
       }
+    }
+
+    // --- Paso C (BEST EFFORT): si sobra tiempo, avanzar backlog histórico ---
+    let cantidadEnriquecidasBacklog = 0
+
+    while (tiempoRestanteMs() > TIEMPO_MINIMO_PARA_INTENTAR_BACKLOG_MS) {
+      const { data: pendientesBacklog, error: errorBacklog } = await supabase.rpc(
+        'codigos_pendientes_relevantes',
+        { p_limite: TANDA_BACKLOG }
+      )
+      if (errorBacklog) throw errorBacklog
+      if (!pendientesBacklog || pendientesBacklog.length === 0) break // backlog agotado
+
+      const enriquecidas = await enriquecerYGuardarProgresivo(
+        pendientesBacklog,
+        ticket,
+        supabase,
+        CONCURRENCIA
+      )
+      cantidadEnriquecidasBacklog += enriquecidas
+
+      // Si una tanda completa no encontró nada válido, evitamos loop infinito.
+      if (enriquecidas === 0) break
     }
 
     const { error: logError } = await supabase.from('logs_ingesta').insert({
       ok: true,
       fecha_consultada: fecha,
       cantidad_insertadas: cantidadInsertadas,
-      cantidad_enriquecidas: cantidadEnriquecidas,
+      cantidad_enriquecidas: cantidadEnriquecidasHoy + cantidadEnriquecidasBacklog,
       mensaje_error: null,
     })
     if (logError) console.error('Error al insertar en logs_ingesta:', logError)
@@ -198,7 +238,8 @@ Deno.serve(async (_req) => {
         ok: true,
         fecha,
         insertadas: cantidadInsertadas,
-        enriquecidas: cantidadEnriquecidas,
+        enriquecidas_hoy: cantidadEnriquecidasHoy,
+        enriquecidas_backlog: cantidadEnriquecidasBacklog,
       }),
       { headers: { 'Content-Type': 'application/json' } }
     )
