@@ -171,6 +171,16 @@ Cada etapa tiene: objetivo, tareas, y **criterio de aceptación** (cómo saber q
 
 **Riesgo conocido, no resuelto todavía:** si algún día entran muchas más licitaciones de lo habitual (ej. cierre de mes fiscal, actualmente ~1.249/día es lo normal), el Paso B podría no alcanzar a terminar dentro del límite de 150s del plan gratuito. Como sube por tandas, no se pierde lo ya procesado, pero esa corrida específica quedaría con el Paso B incompleto hasta que la retome la siguiente corrida programada. No hay forma de detectarlo automáticamente todavía más que revisando `logs_ingesta` manualmente.
 
+### Etapa 10 — Panel de administrador (solo visualización)
+- [x] Columna `perfiles.es_admin` + función `es_admin_actual()` (security definer, bypassa RLS)
+- [x] Función `admin_stats_licitaciones()`: total de licitaciones, cuántas están "completas" (organismo + descripción no nulos), cuántas se cargaron hoy, y cuántas de esas están completas
+- [x] Función `admin_stats_usuarios()`: lista de usuarios con email, fecha de registro (`trial_inicio`), días restantes de trial (`trial_fin`, puede ser negativo si ya venció), y si se les envió el correo de coincidencias hoy (`notificaciones_enviadas.enviado_en`)
+- [x] Ruta protegida `/admin` en el frontend (`app/admin/page.tsx`): verifica sesión + `es_admin_actual()` en el servidor, redirige si no corresponde
+- [x] Helper `utils/supabase/server.ts` para Server Components (no existía antes de esta etapa)
+- [x] UI de solo lectura con los 3 indicadores (sin acciones, sin edición)
+- [ ] Verificación manual pendiente: confirmar bloqueo efectivo a usuarios no-admin (redirect + RPC devuelve "No autorizado"), y confirmar ruta real de `/login` usada en el redirect
+
+**Criterio de aceptación:** un usuario admin logueado ve los 3 indicadores con datos reales y actualizados; un usuario no-admin que intente entrar a `/admin` es redirigido y no puede ver los datos ni llamando las funciones RPC directamente.
 
 ---
 
@@ -331,3 +341,23 @@ Cada etapa tiene: objetivo, tareas, y **criterio de aceptación** (cómo saber q
   1. Ejecutar el SQL nuevo y desplegar la Edge Function actualizada (ver arriba) — sin esto, el código nuevo no está corriendo, solo existe como diseño.
   2. Confirmar el comando/nombre de proyecto exacto para el deploy si difiere del usado en la Etapa 2.
 - Próximo paso sugerido: desplegar lo diseñado en esta etapa y dejarlo corriendo al menos 2-3 días revisando `logs_ingesta` antes de dar la Etapa 9 por cerrada. Si en ese monitoreo `CONCURRENCIA=12` genera timeouts, bajarlo de vuelta a 8-10. Recién después de confirmar que el Paso B cubre el 100% de "lo de cada llamada" de forma sostenida, retomar el punto pendiente de la Etapa 7 (responsive/mobile y checklist de demo).
+### [2026-09-07] — Agente/sesión: Claude (Etapa 10 — panel de administrador, verificación pendiente)
+- Etapa en la que se trabajó: Etapa 10 (nueva) — panel de administrador con indicadores de solo lectura.
+- Qué se completó:
+  1. Columna `perfiles.es_admin` (booleano, default false) y función `es_admin_actual()` (security definer) que la consulta contra `auth.uid()` — patrón reutilizado de otras funciones security definer del proyecto para no depender de RLS ni de GRANT adicional sobre `auth.users`.
+  2. Función `admin_stats_licitaciones()`: retorna total de licitaciones, cuántas están "completas" (definido como `organismo is not null and descripcion is not null`, mismo criterio que ya usaba `codigos_pendientes_relevantes` para priorizar enriquecimiento), cuántas se cargaron en el día en curso (comparando `fecha_publicacion` contra la fecha actual en huso horario America/Santiago) y cuántas de esas están completas.
+  3. Función `admin_stats_usuarios()`: retorna email, `trial_inicio`, `trial_fin`, días restantes de trial (puede salir negativo si ya venció, a propósito, para que el admin vea "vencido hace N días" en vez de un 0 que esconde el problema), y si se le envió correo de coincidencias en el día actual (consultando `notificaciones_enviadas` filtrando por `canal = 'email'` y `enviado_en` convertido a fecha en huso horario de Chile).
+  4. Nuevo helper `utils/supabase/server.ts` — no existía en el proyecto hasta ahora; todo el código previo usaba `utils/supabase/client.ts` (Client Components). Fue necesario porque `/admin` se protege en el servidor, no en el cliente.
+  5. Página `app/admin/page.tsx` (Server Component): verifica sesión y `es_admin_actual()` antes de renderizar cualquier dato, con `export const dynamic = 'force-dynamic'` para que nunca se sirvan estadísticas cacheadas. Tabla de usuarios con fila resaltada en rojo cuando el trial está vencido.
+- Qué quedó pendiente / a medias:
+  1. NO VERIFICADO TODAVÍA: bloqueo real a un usuario no-admin (que el redirect a `/` ocurra y que llamar la RPC directamente devuelva "No autorizado" en vez de datos). Ambas funciones están escritas para bloquear, pero no se confirmó con una prueba real de principio a fin durante esta sesión.
+  2. La ruta usada en `redirect('/login')` dentro de `app/admin/page.tsx` es una suposición — no se confirmó contra el nombre real de la ruta de login del proyecto.
+  3. Sin índice sobre `notificaciones_enviadas (user_id, canal, enviado_en)` — no es necesario para el volumen actual (1 usuario), pero si se agregan más usuarios/notificaciones, el `exists(...)` de `admin_stats_usuarios()` se beneficiaría de él.
+- Decisiones tomadas que no estaban en el plan original:
+  1. Se definió explícitamente "licitación completa" como `organismo is not null and descripcion is not null` para el panel — no estaba definido en ningún lugar del plan qué significa "actualizada con toda su información", se tomó el mismo criterio ya usado internamente por el sistema de enriquecimiento para no introducir una segunda definición divergente.
+  2. Días restantes de trial se dejan sin acotar en 0: un trial vencido muestra número negativo (ej. -3), mostrado en la UI como "Vencido hace 3 días" en rojo, en vez de ocultar cuánto tiempo lleva vencido.
+  3. Las funciones `admin_stats_*` son `security definer` en vez de depender de RLS — decisión explícita para que un admin no quede bloqueado de ver el panel si su propio trial vence, y para no exponer estas estadísticas a usuarios normales vía política RLS (el chequeo de admin vive dentro de la función, no en una policy).
+- Bloqueos o cosas que el humano debe resolver:
+  1. Confirmar la ruta real de login del proyecto y ajustar `redirect('/login')` en `app/admin/page.tsx` si no coincide.
+  2. Ejecutar la prueba manual de bloqueo a no-admin descrita arriba antes de dar la etapa por cerrada al 100%.
+- Próximo paso sugerido: correr la verificación manual pendiente (punto 1 de arriba) y, una vez confirmada, marcar esa línea como hecha en el checklist de la Etapa 10. Después, decidir si se retoma la Etapa 7 (responsive/mobile y checklist de demo) o el enriquecimiento agresivo de backlog pendiente de la Etapa 9.
